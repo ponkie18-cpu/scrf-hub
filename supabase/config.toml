@@ -1,0 +1,71 @@
+project_id = "woiezcydmmngzlbxraxl"
+
+# Scoring engine requires authentication - manual JWT validation in code
+# Uses getUser() to verify tokens and extract user ID for all operations
+[functions.scoring-engine]
+verify_jwt = false
+
+# Public contact form endpoint - intentionally unauthenticated
+# Protected by: input validation, rate limiting (5 req/min per IP), HTML sanitization
+[functions.send-contact-email]
+verify_jwt = false
+
+# SCRF AI Agent - requires authentication, validated in code
+[functions.scrf-agent]
+verify_jwt = false
+
+# Contract Clause Analyser - NLP-powered contract analysis, auth validated in code
+[functions.contract-analyser]
+verify_jwt = false
+
+# Paystack payment initialization - auth validated in code
+[functions.paystack-initialize]
+verify_jwt = false
+
+# Paystack webhook - signature validated in code, no JWT
+[functions.paystack-webhook]
+verify_jwt = false
+
+# Paystack payment verification - auth validated in code
+[functions.paystack-verify]
+verify_jwt = false
+
+# Billing webhook — public endpoint, HMAC signature validated in code
+[functions.billing-webhook]
+verify_jwt = false
+
+# Activate Pro trial — auth validated in code
+[functions.activate-pro-trial]
+verify_jwt = false
+
+# Activate paid subscription — auth validated in code
+[functions.activate-paid-subscription]
+verify_jwt = false
+
+# Cancel subscription — auth validated in code
+[functions.cancel-subscription]
+verify_jwt = false
+
+# Billing lifecycle cron — called by pg_cron
+[functions.billing-lifecycle-cron]
+verify_jwt = false
+
+# Get billing status — auth validated in code
+[functions.get-billing-status]
+verify_jwt = false
+
+# Run validation batch — admin auth validated in code
+[functions.run-validation-batch]
+verify_jwt = false
+
+# Apply knowledge correction — admin auth validated in code
+[functions.apply-knowledge-correction]
+verify_jwt = false
+
+# Validation coverage report — scheduled/admin function
+[functions.validation-coverage-report]
+verify_jwt = false
+
+# Run agent evaluation — admin auth validated in code
+[functions.run-agent-evaluation]
+verify_jwt = false

@@ -32,100 +32,35 @@ serve(async (req) => {
       });
     }
 
-    const { correctionId, appliedBy } = await req.json();
-
-    if (!correctionId) {
+    const { correctionId } = await req.json();
+    if (typeof correctionId !== "string" || !/^[0-9a-f-]{36}$/i.test(correctionId)) {
       return new Response(JSON.stringify({ error: "correctionId is required" }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Fetch the correction
-    const { data: correction, error: cErr } = await supabase
-      .from("knowledge_corrections")
-      .select("*, expert_reviews(response_id, reviewer_name)")
-      .eq("id", correctionId)
-      .single();
-
-    if (cErr || !correction) {
-      return new Response(JSON.stringify({ error: "Correction not found" }), {
-        status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    // Use the caller's JWT for the RPC. The service key must not erase actor identity.
+    const caller = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: proposalId, error } = await caller.rpc("submit_knowledge_correction", {
+      _correction_id: correctionId,
+    });
+    if (error) {
+      return new Response(JSON.stringify({ error: "Unable to submit correction. Administrator access and a supporting reference are required." }), {
+        status: error.code === "42501" ? 403 : 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    if (correction.applied_to_system_prompt) {
-      return new Response(JSON.stringify({ error: "Correction already applied" }), {
-        status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Add to agent knowledge base
-    const { error: kbErr } = await supabase
-      .from("agent_knowledge_base")
-      .insert({
-        correction_id: correctionId,
-        domain: correction.domain,
-        corrected_statement: correction.corrected_statement,
-        supporting_reference: correction.supporting_reference,
-        applied_by: appliedBy || user.email || "admin",
-      });
-
-    if (kbErr) {
-      return new Response(JSON.stringify({ error: "Failed to add to knowledge base", details: kbErr.message }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Mark correction as applied
-    await supabase
-      .from("knowledge_corrections")
-      .update({
-        applied_to_system_prompt: true,
-        applied_at: new Date().toISOString(),
-        applied_by: appliedBy || user.email || "admin",
-      })
-      .eq("id", correctionId);
-
-    // Update the review status
-    await supabase
-      .from("expert_reviews")
-      .update({ review_status: "correction_applied" })
-      .eq("id", correction.review_id);
-
-    // Generate diff
-    const diff = {
-      domain: correction.domain,
-      type: correction.correction_type,
-      severity: correction.severity,
-      before: correction.original_agent_statement,
-      after: correction.corrected_statement,
-      reference: correction.supporting_reference,
-      requiresSystemPromptUpdate: correction.severity === "critical" || correction.severity === "high",
-    };
-
-    // Audit log
-    try {
-      await supabase.from("audit_log").insert({
-        user_id: user.id,
-        action: "knowledge_correction_applied",
-        resource_type: "knowledge_corrections",
-        resource_id: correctionId,
-        metadata: { domain: correction.domain, severity: correction.severity, correction_type: correction.correction_type },
-      });
-    } catch (_) { /* Non-blocking */ }
-
     return new Response(JSON.stringify({
-      success: true,
-      diff,
-      message: diff.requiresSystemPromptUpdate
-        ? "Critical/high correction applied. System prompt update recommended."
-        : "Correction applied to knowledge base.",
+      success: true, proposalId, status: "pending",
+      message: "Correction submitted for independent administrator approval; it is not yet used by the agent.",
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
     console.error("apply-knowledge-correction error:", err);
-    return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Unknown error" }), {
+    return new Response(JSON.stringify({ error: "Unable to submit knowledge correction" }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }

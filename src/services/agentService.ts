@@ -7,6 +7,10 @@ export interface AgentResponseData {
   relatedTools: string[];
   nextAction: string;
   _logId?: string;
+  evidenceIds?: string[];
+  contextVersion?: string;
+  dataWarnings?: string[];
+  sources?: { id: string; kind: "assessment" | "action" | "alert" | "knowledge"; observedAt: string; revision?: number }[];
 }
 
 export interface AgentRequestContext {

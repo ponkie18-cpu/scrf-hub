@@ -20,6 +20,7 @@ export default function KnowledgeLibrary() {
       const { data } = await supabase
         .from("agent_knowledge_base")
         .select("*")
+        .eq("status", "approved")
         .order("domain")
         .order("applied_at", { ascending: false });
       return data || [];
@@ -81,7 +82,7 @@ export default function KnowledgeLibrary() {
                     <p className="font-medium text-foreground">{entry.corrected_statement}</p>
                     <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
                       {entry.supporting_reference && <span>📖 {entry.supporting_reference}</span>}
-                      <span>✓ Verified {entry.applied_at ? new Date(entry.applied_at).toLocaleDateString() : "N/A"}</span>
+                      <span>Published {entry.applied_at ? new Date(entry.applied_at).toLocaleDateString() : "N/A"} (agent also checks jurisdiction and validity)</span>
                       {entry.applied_by && <span>by {entry.applied_by}</span>}
                     </div>
                   </div>

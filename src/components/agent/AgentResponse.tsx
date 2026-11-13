@@ -121,6 +121,27 @@ export default function AgentResponse({ data, logId, className = "" }: AgentResp
           </div>
         )}
 
+        {data.sources && data.sources.length > 0 && (
+          <section className="text-xs text-muted-foreground" aria-label="Answer sources">
+            <p className="font-medium">Based on</p>
+            <ul className="list-disc pl-4">
+              {data.sources.map((source) => (
+                <li key={source.id}>{source.kind} · {source.id}
+                  {source.revision ? ` · revision ${source.revision}` : ""}
+                  {` · as of ${new Date(source.observedAt).toLocaleDateString()}`}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {data.dataWarnings && data.dataWarnings.length > 0 && (
+          <section className="text-xs text-muted-foreground" aria-label="Data limitations">
+            <p className="font-medium">Data limitations</p>
+            <ul className="list-disc pl-4">
+              {data.dataWarnings.map((warning, index) => <li key={index}>{warning}</li>)}
+            </ul>
+          </section>
+        )}
         {/* Rating */}
         <div className="flex justify-end pt-2 border-t border-border/50">
           <AgentRating logId={logId} />

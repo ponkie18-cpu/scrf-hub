@@ -1,5 +1,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildContext, toUserContext, type UserContext } from "../_shared/context/buildContext.ts";
+import { renderContext } from "../_shared/context/renderContext.ts";
+import { attachEvidence } from "../_shared/context/validateEvidence.ts";
+import { logContextEvent, logContextValidation } from "../_shared/context/logContextEvent.ts";
+import { decodeStructuredAnswer } from "../_shared/context/validateStructuredAnswer.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -167,6 +172,11 @@ const STRUCTURED_RESPONSE_TOOL = {
           type: "string",
           description: "The single most important next step the user should take. Start with a verb.",
         },
+        evidenceIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Evidence registry IDs supporting business claims. Never invent IDs; use [] if no registry is supplied.",
+        },
       },
       required: ["insight", "recommendation", "urgencyLevel", "relatedTools", "nextAction"],
       additionalProperties: false,
@@ -178,148 +188,13 @@ const STRUCTURED_RESPONSE_TOOL = {
 // REAL-TIME CONTEXT BUILDER  (Part 1)
 // Fetches ALL user data in parallel before any AI call
 // ────────────────────────────────────────────────────────────
-interface UserContext {
-  company: Record<string, unknown> | null;
-  profile: Record<string, unknown> | null;
-  domainScores: Record<string, number | null>;
-  overallScore: number | null;
-  recentAssessments: Record<string, unknown>[];
-  activeActions: Record<string, unknown>[];
-  pendingActions: number;
-  overdueActions: number;
-  overdueDetails: Record<string, unknown>[];
-  unreadAlerts: Record<string, unknown>[];
-  financialSnapshot: Record<string, unknown> | null;
-  conversationMessages: Record<string, unknown>[];
-}
-
 async function getUserContext(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   userId: string,
   sessionId?: string,
 ): Promise<UserContext> {
-  // ALL data fetches run in parallel for minimum latency
-  const [profileRes, assessmentsRes, actionsRes, overdueRes, activeActionsRes, alertsRes, financialRes, convoRes] =
-    await Promise.all([
-      // 1. User profile
-      supabase.from("profiles").select("*, company_id").eq("id", userId).maybeSingle(),
-
-      // 2. Latest risk assessments (most recent per domain)
-      supabase
-        .from("risk_assessments")
-        .select("domain, score, updated_at, tool_id, assessment_data")
-        .eq("user_id", userId)
-        .order("updated_at", { ascending: false })
-        .limit(10),
-
-      // 3. All open action items (count)
-      supabase
-        .from("action_items")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("completed", false),
-
-      // 4. Overdue action items
-      supabase
-        .from("action_items")
-        .select("id, title, domain, due_date, priority")
-        .eq("user_id", userId)
-        .eq("completed", false)
-        .not("due_date", "is", null)
-        .lt("due_date", new Date().toISOString()),
-
-      // 5. Active action items (top 10, most urgent first)
-      supabase
-        .from("action_items")
-        .select("id, title, domain, priority, due_date, description")
-        .eq("user_id", userId)
-        .eq("completed", false)
-        .order("created_at", { ascending: false })
-        .limit(10),
-
-      // 6. Unread alerts for the user's company
-      supabase
-        .from("alerts")
-        .select("title, domain, priority, message, created_at")
-        .eq("dismissed", false)
-        .order("created_at", { ascending: false })
-        .limit(5),
-
-      // 7. Latest financial assessment snapshot
-      supabase
-        .from("risk_assessments")
-        .select("score, assessment_data, updated_at, tool_id")
-        .eq("user_id", userId)
-        .eq("domain", "financial")
-        .order("updated_at", { ascending: false })
-        .limit(1),
-
-      // 8. Last 6 messages in current conversation (for continuity)
-      sessionId
-        ? supabase
-            .from("agent_conversations")
-            .select("role, content, created_at")
-            .eq("user_id", userId)
-            .eq("session_id", sessionId)
-            .order("created_at", { ascending: false })
-            .limit(6)
-        : Promise.resolve({ data: [], error: null }),
-    ]);
-
-  // Fetch company data if profile has company_id
-  let company = null;
-  if (profileRes.data?.company_id) {
-    const { data } = await supabase
-      .from("companies")
-      .select("name, industry, size, region, country, revenue_band, years_operating")
-      .eq("id", profileRes.data.company_id)
-      .maybeSingle();
-    company = data;
-  }
-
-  // Build domain scores (most recent per domain)
-  const domainScores: Record<string, number | null> = {
-    operational: null,
-    financial: null,
-    compliance: null,
-    strategic: null,
-  };
-  const assessments = assessmentsRes.data || [];
-  for (const a of assessments) {
-    if (domainScores[a.domain] === null) domainScores[a.domain] = a.score;
-  }
-
-  const scoredDomains = Object.values(domainScores).filter((s) => s !== null) as number[];
-  const overallScore =
-    scoredDomains.length > 0
-      ? Math.round(scoredDomains.reduce((a, b) => a + b, 0) / scoredDomains.length)
-      : null;
-
-  // Financial snapshot from most recent financial assessment
-  const financialData = financialRes.data?.[0] || null;
-  const financialSnapshot = financialData
-    ? {
-        healthScore: financialData.score,
-        assessmentData: financialData.assessment_data,
-        assessedAt: financialData.updated_at,
-        toolId: financialData.tool_id,
-      }
-    : null;
-
-  return {
-    company,
-    profile: profileRes.data,
-    domainScores,
-    overallScore,
-    recentAssessments: assessments,
-    activeActions: activeActionsRes.data || [],
-    pendingActions: (actionsRes.data || []).length,
-    overdueActions: (overdueRes.data || []).length,
-    overdueDetails: overdueRes.data || [],
-    unreadAlerts: alertsRes.data || [],
-    financialSnapshot,
-    conversationMessages: (convoRes.data || []).reverse(), // chronological order
-  };
+  return toUserContext(await buildContext(supabase, userId, sessionId, new Date(),
+    Deno.env.get("SCRF_SEMANTIC_CONTEXT_V1") === "true"));
 }
 
 // ────────────────────────────────────────────────────────────
@@ -327,6 +202,10 @@ async function getUserContext(
 // Constructs the system prompt dynamically from live data
 // ────────────────────────────────────────────────────────────
 function buildGroundedSystemPrompt(ctx: UserContext, mode: "standard" | "conversation"): string {
+  // The shared renderer is also used by evaluation. Legacy layout remains a rollout option.
+  if (Deno.env.get("SCRF_SEMANTIC_CONTEXT_V1") === "true") {
+    return renderContext(ctx.semanticContext, mode);
+  }
   const businessName = (ctx.company as any)?.name || "this business";
   const industry = (ctx.company as any)?.industry || "Not specified";
   const size = (ctx.company as any)?.size || "Not specified";
@@ -387,8 +266,8 @@ CONVERSATION RULES:
 2. When referencing SCRF Hub tools, use their exact IDs in the relatedTools array so the UI can render deep-dive buttons.
 3. Keep responses concise — 2-4 sentences for insight, 1-2 for recommendation.
 4. If the user asks about a specific domain, focus your advice there.
-5. Remember the FULL conversation history and build on ALL previous exchanges — synthesise across the entire session, not just the last message.
-6. When the user asks for a summary or synthesis of the conversation, reference specific details from earlier messages.`
+5. Use only the bounded server-side conversation history supplied; do not claim full-session memory.
+6. When summarising, reference only earlier messages actually supplied.`
       : `When responding, always use the provide_structured_response tool to format your output.`;
 
   return `You are the SCRF Intelligence Agent for ${businessName}.
@@ -440,7 +319,18 @@ RESPONSE RULES — FOLLOW THESE EXACTLY
 7. Urgency language must match actual data: only use words like 'critical' or 'urgent' if a score is below 40 or an action item is overdue
 8. When asked "what is my biggest risk" — identify the domain with the LOWEST score from the data above, or the domain with the most overdue actions
 
-${conversationRules}`;
+${conversationRules}
+
+AUTHORITATIVE DATA AVAILABILITY (overrides any absence wording above):
+${JSON.stringify({ statuses: {
+  assessments: ctx.semanticContext.assessments.status,
+  actions: ctx.semanticContext.actions.status,
+  alerts: ctx.semanticContext.alerts.status,
+  scores: ctx.semanticContext.scores.status,
+}, warnings: ctx.semanticContext.warnings })}
+If a source is unavailable, say it could not be loaded. Never infer no assessment,
+no actions, or no alerts from an unavailable source. Scores are adjusted resilience
+scores; source assessment scores are not interchangeable with adjusted scores.`;
 }
 
 // Legacy context builder (for specialised tool modes that use clientContext)
@@ -517,6 +407,8 @@ function validateAgentResponse(
     (m) => parseInt(m[1] || m[2] || m[3]),
   );
   const actualScores = Object.values(ctx.domainScores).filter((s) => s !== null) as number[];
+  actualScores.push(...ctx.recentAssessments.map((row) => row.score)
+    .filter((value): value is number => typeof value === "number"));
   if (ctx.overallScore !== null) actualScores.push(ctx.overallScore);
   if (ctx.financialSnapshot) actualScores.push((ctx.financialSnapshot as any).healthScore);
 
@@ -588,11 +480,11 @@ const SAFE_FALLBACK_RESPONSE = {
   insight:
     "I don't have enough verified information about your business to answer that accurately right now.",
   recommendation:
-    "Complete your outstanding risk assessments so I can provide data-grounded guidance. Start with the tool most relevant to your question.",
+    "Review the available dashboard data and try again. A validation or retrieval failure does not mean your assessments are incomplete.",
   urgencyLevel: "amber",
   relatedTools: ["spof", "financial-health", "compliance-motivation", "cyber-scorecard"],
   nextAction:
-    "Open the Dashboard and run the first incomplete assessment to build your risk profile.",
+    "Open the Dashboard to check your latest assessments and source availability.",
 };
 
 // ────────────────────────────────────────────────────────────
@@ -661,7 +553,7 @@ function sanitisePrompt(input: string): string {
 // RATE LIMITER
 // ────────────────────────────────────────────────────────────
 async function checkRateLimit(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   userId: string,
   tier: string,
 ): Promise<{ allowed: boolean; remaining: number }> {
@@ -756,10 +648,8 @@ serve(async (req) => {
     const body = await req.json();
     const {
       message,
-      context: clientContext,
       type,
       sessionId,
-      conversationHistory,
       spofData,
       financialHealthData,
       gameTheoryData,
@@ -767,6 +657,18 @@ serve(async (req) => {
       marketEntryData,
       premortemData,
     } = body;
+
+    if (sessionId !== undefined && (typeof sessionId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId))) {
+      return new Response(JSON.stringify({ error: "Invalid conversation session" }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (message !== undefined && (typeof message !== "string" || message.length > 16000)) {
+      return new Response(JSON.stringify({ error: "Invalid message" }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // Pro-only tool types — server-side enforcement
     const PRO_ONLY_TYPES = ["game_theory_nash", "market_entry", "prisoner_dilemma", "pre_mortem", "resilience_audit"];
@@ -867,9 +769,22 @@ serve(async (req) => {
     // ── FETCH ALL USER CONTEXT IN PARALLEL ──
     const contextFetchStart = Date.now();
     const serverContext = await getUserContext(supabase, user.id, sessionId);
+    // Topic hints may rank already-authorised evidence, never overwrite it.
+    const hintedDomain = body.context?.currentDomain;
+    if (typeof hintedDomain === "string" && ["operational", "financial", "compliance", "strategic",
+      "tax_sars", "popia", "cipc_companies_act", "labour_bcea", "fais_financial"].includes(hintedDomain)) {
+      serverContext.semanticContext.focusDomain = hintedDomain;
+    }
     const contextFetchLatencyMs = Date.now() - contextFetchStart;
-    const mergedContext = { ...serverContext, ...(clientContext || {}) };
-    const legacyContextMessage = buildContextMessage(mergedContext);
+    // Client context must NEVER overwrite verified business records.
+    // Specialised tool payloads remain explicitly user-submitted inputs.
+    const mergedContext = serverContext;
+    const legacyContextMessage = buildContextMessage(mergedContext) +
+      `\nSOURCE STATUS: ${JSON.stringify(serverContext.semanticContext.warnings)}\n` +
+      "User-submitted tool payloads are unverified inputs, not database facts.";
+    const contextEventId = Deno.env.get("SCRF_CONTEXT_AUDIT_ENABLED") === "true"
+      ? await logContextEvent(supabase, serverContext.semanticContext, contextFetchLatencyMs,
+        Deno.env.get("SCRF_SEMANTIC_CONTEXT_V1") === "true") : null;
 
     // ── CLASSIFY QUERY & SELECT MODEL ──
     const queryType = classifyQuery(message || "", type);
@@ -1577,6 +1492,11 @@ Use the provide_financial_analysis tool to return structured output.`;
 
     // === BRIEFING MODE (streaming) ===
     if (type === "briefing") {
+      if ([serverContext.semanticContext.assessments, serverContext.semanticContext.actions,
+        serverContext.semanticContext.alerts, serverContext.semanticContext.scores].some((r) => r.status === "unavailable")) {
+        return new Response(JSON.stringify({ error: "context_unavailable", message: "Business data could not be loaded. Please try again." }),
+          { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
       // Use grounded context for briefing
       const groundedPrompt = buildGroundedSystemPrompt(serverContext, "standard");
       const messages = [
@@ -1641,7 +1561,7 @@ Use the provide_financial_analysis tool to return structured output.`;
       const groundedPrompt = buildGroundedSystemPrompt(serverContext, "conversation");
 
       // Build messages with conversation history
-      const history = (conversationHistory || []).map((m: { role: string; content: string }) => ({
+      const history = serverContext.conversationMessages.map((m) => ({
         role: m.role,
         content: m.content,
       }));
@@ -1676,16 +1596,9 @@ Use the provide_financial_analysis tool to return structured output.`;
 
       let structured: any;
       if (toolCall?.function?.arguments) {
-        structured = JSON.parse(toolCall.function.arguments);
+        structured = decodeStructuredAnswer(toolCall.function.arguments) || { ...SAFE_FALLBACK_RESPONSE };
       } else {
-        const content = aiResult.choices?.[0]?.message?.content || "";
-        structured = {
-          insight: content,
-          recommendation: "Review the insight above and take appropriate action.",
-          urgencyLevel: "amber",
-          relatedTools: [],
-          nextAction: "Review this guidance and identify your next step.",
-        };
+        structured = { ...SAFE_FALLBACK_RESPONSE };
       }
 
       // ── RESPONSE VALIDATION ──
@@ -1698,6 +1611,13 @@ Use the provide_financial_analysis tool to return structured output.`;
       } else if (validation.flags.length > 0) {
         console.warn("Agent response soft warnings:", JSON.stringify(validation.flags));
       }
+
+      structured = attachEvidence(structured, serverContext.semanticContext);
+      await logContextValidation(supabase, contextEventId, [
+        ...validation.flags.map((flag) => flag.type),
+        structured.dataWarnings.some((warning: string) => warning.includes("evidence validation failed"))
+          ? "EVIDENCE_INVALID" : structured.evidenceIds.length ? "VALIDATED" : "EVIDENCE_MISSING",
+      ]);
 
       // ── STREAM the insight text to the client via SSE ──
       const encoder = new TextEncoder();
@@ -1938,16 +1858,9 @@ Perform a full resilience audit.`;
 
     let structured;
     if (toolCall?.function?.arguments) {
-      structured = JSON.parse(toolCall.function.arguments);
+      structured = decodeStructuredAnswer(toolCall.function.arguments) || { ...SAFE_FALLBACK_RESPONSE };
     } else {
-      const content = aiResult.choices?.[0]?.message?.content || "";
-      structured = {
-        insight: content,
-        recommendation: "Review the insight above and take appropriate action.",
-        urgencyLevel: "amber",
-        relatedTools: [],
-        nextAction: "Review this guidance and identify your next step.",
-      };
+      structured = { ...SAFE_FALLBACK_RESPONSE };
     }
 
     // ── RESPONSE VALIDATION (Part 3) ──
@@ -1961,6 +1874,13 @@ Perform a full resilience audit.`;
       console.warn("Agent response soft warnings:", JSON.stringify(validation.flags));
     }
 
+    structured = attachEvidence(structured, serverContext.semanticContext);
+    await logContextValidation(supabase, contextEventId, [
+      ...validation.flags.map((flag) => flag.type),
+      structured.dataWarnings.some((warning: string) => warning.includes("evidence validation failed"))
+        ? "EVIDENCE_INVALID" : structured.evidenceIds.length ? "VALIDATED" : "EVIDENCE_MISSING",
+    ]);
+
     // ── ACCURACY LOGGING ──
     const responseLatencyMs = Date.now() - requestStartTime;
     const totalTokens = aiResult?.usage?.total_tokens || aiResult?.usage?.completion_tokens || 0;
@@ -1968,11 +1888,10 @@ Perform a full resilience audit.`;
     // Count how many context fields were successfully fetched
     let contextFieldsFetched = 0;
     if (serverContext.profile) contextFieldsFetched++;
-    if (serverContext.recentAssessments.length > 0) contextFieldsFetched++;
-    if (serverContext.activeActions.length >= 0) contextFieldsFetched++;
-    if (serverContext.unreadAlerts.length >= 0) contextFieldsFetched++;
-    if (serverContext.financialSnapshot !== undefined) contextFieldsFetched++;
-    if (serverContext.conversationMessages !== undefined) contextFieldsFetched++;
+    for (const result of [serverContext.semanticContext.assessments, serverContext.semanticContext.actions,
+      serverContext.semanticContext.alerts, serverContext.semanticContext.scores, serverContext.semanticContext.conversation]) {
+      if (result.status !== "unavailable") contextFieldsFetched++;
+    }
 
     // Non-blocking accuracy log insert
     const logId = crypto.randomUUID();
@@ -1991,7 +1910,7 @@ Perform a full resilience audit.`;
       model_used: selectedModel,
       query_type: queryType,
       grounding_used: groundingUsed,
-    }).then(() => {}).catch(() => {});
+    }).then(() => {}, () => {});
 
     return new Response(JSON.stringify({ ...structured, _logId: logId }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {

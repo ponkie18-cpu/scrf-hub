@@ -1,17 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.89.0";
+import { calculateScores, DEFAULT_DOMAIN_WEIGHTS, isOverdue as dueDateIsOverdue } from "../_shared/scoring/calculateScores.ts";
+import { loadAssessments, loadActions } from "../_shared/scoring/loadScoringInputs.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
-// Default scoring configuration
-const DEFAULT_DOMAIN_WEIGHTS = {
-  operational: 0.25,
-  financial: 0.25,
-  compliance: 0.25,
-  strategic: 0.25,
 };
 
 const INDUSTRY_MULTIPLIERS: Record<string, Record<string, number>> = {
@@ -95,11 +89,13 @@ serve(async (req) => {
     const body: CalculateRequest = await req.json();
 
     // Get user profile and company info
-    const { data: profile } = await supabase
+    const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("company_id")
       .eq("id", user.id)
       .single();
+
+    if (profileError || !profile) throw new Error("SCORING_SCOPE_UNAVAILABLE");
 
     let company = null;
     let scoringConfig: ScoringConfig = {
@@ -110,20 +106,23 @@ serve(async (req) => {
     };
 
     if (profile?.company_id) {
-      const { data: companyData } = await supabase
+      const { data: companyData, error: companyError } = await supabase
         .from("companies")
         .select("*")
         .eq("id", profile.company_id)
         .single();
       
+      if (companyError || !companyData) throw new Error("SCORING_COMPANY_UNAVAILABLE");
       company = companyData;
 
       // Get custom scoring config
-      const { data: configData } = await supabase
+      const { data: configData, error: configError } = await supabase
         .from("scoring_config")
         .select("*")
         .eq("company_id", profile.company_id)
-        .single();
+        .maybeSingle();
+
+      if (configError) throw new Error("SCORING_CONFIG_UNAVAILABLE");
 
       if (configData) {
         scoringConfig.domain_weights = configData.domain_weights as Record<string, number>;
@@ -396,72 +395,19 @@ async function calculateOverallScore(
   supabase: any,
   config: ScoringConfig
 ) {
-  // Get latest assessment per domain
-  const { data: assessments } = await supabase
-    .from("risk_assessments")
-    .select("domain, score, updated_at, confidence")
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false }) as { data: AssessmentRow[] | null };
-
-  const latestByDomain: Record<string, { score: number; confidence: number; updatedAt: Date }> = {};
-  
-  for (const a of assessments || []) {
-    if (!latestByDomain[a.domain]) {
-      latestByDomain[a.domain] = {
-        score: a.score,
-        confidence: a.confidence || 1,
-        updatedAt: new Date(a.updated_at),
-      };
-    }
+  const scope = { userId, companyId: null, assessmentVisibility: "own" as const };
+  const [assessments, actions] = await Promise.all([
+    loadAssessments(supabase, scope), loadActions(supabase, scope),
+  ]);
+  if (assessments.status === "unavailable" || actions.status === "unavailable") {
+    throw new Error("SCORING_INPUT_UNAVAILABLE");
   }
-
-  // Get pending/overdue action counts per domain for penalty calculation
-  const { data: actions } = await supabase
-    .from("action_items")
-    .select("domain, priority")
-    .eq("user_id", userId)
-    .eq("completed", false) as { data: ActionRow[] | null };
-
-  const actionPenalties: Record<string, number> = {};
-  for (const action of actions || []) {
-    const penalty = action.priority === "high" ? 5 : action.priority === "medium" ? 3 : 1;
-    actionPenalties[action.domain] = (actionPenalties[action.domain] || 0) + penalty;
-  }
-
-  // Calculate weighted overall score
-  let weightedSum = 0;
-  let totalWeight = 0;
-  const domainResults: Record<string, { score: number; trend: string; lastUpdated: string }> = {};
-
-  for (const [domain, weight] of Object.entries(config.domain_weights)) {
-    const assessment = latestByDomain[domain];
-    if (assessment) {
-      // Apply time decay (scores older than 90 days get reduced)
-      const daysSince = (Date.now() - assessment.updatedAt.getTime()) / (1000 * 60 * 60 * 24);
-      const timeFactor = daysSince > 90 ? 0.9 : daysSince > 30 ? 0.95 : 1;
-
-      // Apply action penalty (capped at 20 points)
-      const penalty = Math.min(20, actionPenalties[domain] || 0);
-
-      const adjustedScore = Math.max(0, (assessment.score * timeFactor) - penalty);
-      weightedSum += adjustedScore * weight;
-      totalWeight += weight;
-
-      domainResults[domain] = {
-        score: Math.round(adjustedScore),
-        trend: "stable", // Would need historical data to calculate
-        lastUpdated: assessment.updatedAt.toISOString(),
-      };
-    }
-  }
-
-  const overallScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
-
-  return {
-    score: overallScore,
-    domains: domainResults,
-    actionPenalties,
-  };
+  const result = calculateScores(
+    assessments.status === "available" ? assessments.data : [],
+    actions.status === "available" ? actions.data : [], config, new Date(),
+  );
+  // Preserve legacy numeric API while exposing absence explicitly to newer clients.
+  return { ...result, score: result.score ?? 0, scoreStatus: result.score === null ? "missing" : "available" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -536,6 +482,8 @@ async function getDashboardData(
 
   return {
     overallScore: overallResult.score,
+    scoreStatus: overallResult.scoreStatus,
+    coverage: overallResult.coverage,
     domains: overallResult.domains,
     trend: calculateTrend(historyData),
     weeklyActivity,
@@ -578,6 +526,5 @@ function calculateTrend(history: ScoreHistoryRow[]) {
 }
 
 function isOverdue(dueDate: string | null): boolean {
-  if (!dueDate) return false;
-  return new Date(dueDate) < new Date();
+  return dueDateIsOverdue(dueDate, new Date());
 }

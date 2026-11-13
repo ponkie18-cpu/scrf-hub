@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Shield, CheckCircle, XCircle, Eye, Clock } from "lucide-react";
@@ -35,6 +36,8 @@ export default function SystemPromptUpdate() {
   const queryClient = useQueryClient();
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
+  const [jurisdiction, setJurisdiction] = useState("");
+  const [reviewDate, setReviewDate] = useState("");
 
   const { data: pendingUpdates, isLoading } = useQuery({
     queryKey: ["system-prompt-updates"],
@@ -60,6 +63,7 @@ export default function SystemPromptUpdate() {
       const { data, error } = await supabase
         .from("agent_knowledge_base")
         .select("*")
+        .eq("status", "approved")
         .order("applied_at", { ascending: false });
       if (error) throw error;
       return data || [];
@@ -74,23 +78,14 @@ export default function SystemPromptUpdate() {
       const update = pendingUpdates?.find(u => u.id === updateId);
       if (!update) throw new Error("Update not found");
 
-      if (update.submitted_by === user.email) {
-        throw new Error("You cannot approve your own submission. A different admin must approve (4-eyes principle).");
+      if (!/^([A-Z]{2}|\*)$/.test(jurisdiction) || !reviewDate) {
+        throw new Error("Choose a jurisdiction and future review date before publication.");
       }
-
-      const { error: updateError } = await (supabase as any)
-        .from("system_prompt_updates")
-        .update({
-          approved_by: user.email,
-          approved_at: new Date().toISOString(),
-          status: "approved",
-        })
-        .eq("id", updateId);
-
-      if (updateError) throw updateError;
-
-      const { data, error } = await supabase.functions.invoke("apply-knowledge-correction", {
-        body: { correctionId: update.correction_id },
+      // All authority, four-eyes checks, snapshot checks and publication are atomic in SQL.
+      const { data, error } = await (supabase as any).rpc("approve_knowledge_correction", {
+        _update_id: updateId,
+        _jurisdiction: jurisdiction,
+        _review_due_at: new Date(`${reviewDate}T00:00:00Z`).toISOString(),
       });
 
       if (error) throw error;
@@ -111,15 +106,9 @@ export default function SystemPromptUpdate() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
-      const { error } = await (supabase as any)
-        .from("system_prompt_updates")
-        .update({
-          approved_by: user.email,
-          approved_at: new Date().toISOString(),
-          status: "rejected",
-          rejection_reason: reason,
-        })
-        .eq("id", updateId);
+      const { error } = await (supabase as any).rpc("reject_knowledge_correction", {
+        _update_id: updateId, _reason: reason,
+      });
 
       if (error) throw error;
     },
@@ -154,7 +143,7 @@ export default function SystemPromptUpdate() {
             <div>
               <p className="font-medium text-foreground">4-Eyes Approval Required</p>
               <p className="text-sm text-muted-foreground">
-                Critical and high-severity corrections require approval from a different admin than the submitter.
+                All published corrections require a different verified administrator. Publication makes the text available globally within the selected jurisdiction; never publish customer-specific information here.
               </p>
             </div>
           </div>
@@ -166,7 +155,7 @@ export default function SystemPromptUpdate() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Eye className="h-5 w-5" />
-            Current Agent Knowledge Base ({currentKnowledge?.length || 0} entries)
+            Published Agent Knowledge ({currentKnowledge?.length || 0} entries)
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -197,6 +186,16 @@ export default function SystemPromptUpdate() {
             <Clock className="h-5 w-5 text-primary" />
             Pending Approvals ({pending.length})
           </CardTitle>
+          <div className="grid gap-2 pt-2 sm:grid-cols-2">
+            <label className="text-sm">Jurisdiction (e.g. ZA, GB; * only for jurisdiction-neutral guidance)
+              <Input aria-label="Knowledge jurisdiction" value={jurisdiction}
+                onChange={(e) => setJurisdiction(e.target.value.toUpperCase())} maxLength={2} />
+            </label>
+            <label className="text-sm">Review due date
+              <Input aria-label="Knowledge review due date" type="date" value={reviewDate}
+                onChange={(e) => setReviewDate(e.target.value)} />
+            </label>
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading && <p className="text-muted-foreground">Loading...</p>}
@@ -243,7 +242,7 @@ export default function SystemPromptUpdate() {
                       <Button
                         size="sm"
                         onClick={() => approveMutation.mutate(update.id)}
-                        disabled={approveMutation.isPending}
+                        disabled={approveMutation.isPending || !jurisdiction || !reviewDate}
                       >
                         <CheckCircle className="h-4 w-4 mr-1" />
                         Approve

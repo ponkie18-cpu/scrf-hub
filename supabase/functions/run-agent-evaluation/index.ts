@@ -1,5 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { evaluationFixture } from "../_shared/context/evaluationFixture.ts";
+import { renderContext } from "../_shared/context/renderContext.ts";
 import {
   corsHeaders,
   handleCors,
@@ -193,10 +195,11 @@ serve(async (req) => {
       const q = questions[i] as EvalQuestion;
       if (i > 0) await sleep(DELAY_MS);
 
-      const context = TEST_CONTEXTS[q.domain || "boundary"] || TEST_CONTEXTS.boundary;
+      const context = evaluationFixture(TEST_CONTEXTS[q.domain || "boundary"] || TEST_CONTEXTS.boundary);
       const agentModel = "google/gemini-3-flash-preview";
 
-      // Step 1: Call the agent as a real user would
+      // Shared production context schema, scoring and prompt; this is NOT a full
+      // endpoint replay (auth, interceptors, structured-tool validation and SSE differ).
       const agentStart = Date.now();
       let agentResponse = "";
       let agentTokens = 0;
@@ -213,19 +216,7 @@ serve(async (req) => {
             messages: [
               {
                 role: "system",
-                content: `You are the SCRF Intelligence Agent for ${(context as any).business_name || "a South African SME"}.
-You are a strategic risk advisor grounded in the business data below.
-
-VERIFIED BUSINESS CONTEXT:
-${JSON.stringify(context, null, 2)}
-
-RULES:
-1. Reference ONLY data shown above
-2. If data is missing, say so and name the tool the user should run
-3. End every response with ONE specific action
-4. Maximum 250 words
-5. Dates in DD/MM/YYYY format
-6. NEVER provide tax advice — redirect to sait.org.za`,
+                content: renderContext(context, "standard"),
               },
               { role: "user", content: q.question_text },
             ],

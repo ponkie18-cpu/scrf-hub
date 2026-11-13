@@ -87,6 +87,7 @@ export default function CorrectionsTracker() {
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["knowledge-corrections-full"] });
+      queryClient.invalidateQueries({ queryKey: ["system-prompt-updates"] });
       toast.success(data.message);
     },
     onError: (e: any) => toast.error(e.message),
@@ -186,7 +187,7 @@ export default function CorrectionsTracker() {
                       <Badge variant={config.variant}>{c.severity}</Badge>
                       <Badge variant="outline">{CORRECTION_TYPES.find((t) => t.value === c.correction_type)?.label || c.correction_type}</Badge>
                       <Badge variant="outline">{c.domain}</Badge>
-                      {c.applied_to_system_prompt && <Badge variant="default" className="bg-green-600"><CheckCircle className="h-3 w-3 mr-1" />Applied</Badge>}
+                      {c.applied_to_system_prompt && <Badge variant="outline"><CheckCircle className="h-3 w-3 mr-1" />Previously applied</Badge>}
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                       <div>
@@ -202,16 +203,14 @@ export default function CorrectionsTracker() {
                       <p className="text-xs text-muted-foreground">Reference: {c.supporting_reference}</p>
                     )}
                   </div>
-                  {!c.applied_to_system_prompt && (
-                    <Button
-                      size="sm"
-                      variant={c.severity === "critical" || c.severity === "high" ? "destructive" : "outline"}
-                      onClick={() => applyMutation.mutate(c.id)}
-                      disabled={applyMutation.isPending}
-                    >
-                      <Zap className="h-3 w-3 mr-1" />Apply
-                    </Button>
-                  )}
+                  <Button
+                    size="sm"
+                    variant={c.severity === "critical" || c.severity === "high" ? "destructive" : "outline"}
+                    onClick={() => applyMutation.mutate(c.id)}
+                    disabled={applyMutation.isPending}
+                  >
+                    <Zap className="h-3 w-3 mr-1" />Submit for approval
+                  </Button>
                 </div>
               </CardContent>
             </Card>

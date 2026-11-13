@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
+import { localPostgresEnv } from './security-db-env.mjs';
 
 const exec = promisify(execFile);
 const workdir = resolve(process.argv[2] ?? '');
@@ -35,8 +36,7 @@ async function sql(statement, role = 'postgres', userId = null, jwtRole = role) 
     `${prefix}\n${statement}\nCOMMIT;`,
   ], {
     timeout: 25000, maxBuffer: 1024 * 1024,
-    env: { ...process.env, PGPASSWORD: 'postgres', PGHOSTADDR: '127.0.0.1',
-      PGOPTIONS: '', PGSERVICE: '', PGSSLMODE: 'disable' },
+    env: localPostgresEnv(),
   });
   return stdout.trim();
 }

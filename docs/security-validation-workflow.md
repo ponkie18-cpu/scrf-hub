@@ -69,6 +69,17 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/test-security-db.mjs "$RUNNER_TEMP/scrf-security-db" 2>&1 | tee "$RUNNER_TEMP/database-security.log"
+      - name: Surface database failure in check annotations
+        if: failure()
+        shell: bash
+        run: |
+          for log in "$RUNNER_TEMP/database-security.log" "$RUNNER_TEMP/migration-replay.log"; do
+            if [[ -f "$log" ]]; then
+              printf '::error title=Isolated database validation::'
+              tail -c 6000 "$log" | python3 -c 'import sys; print(sys.stdin.read().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))'
+              break
+            fi
+          done
       - name: Preserve replay evidence (also on failure)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

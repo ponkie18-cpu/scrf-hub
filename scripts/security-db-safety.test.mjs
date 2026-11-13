@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { localPostgresEnv } from './security-db-env.mjs';
 
 const root = process.cwd();
 const temporaryRoot = resolve('.security-ci-safety-tests');
@@ -12,6 +13,23 @@ const env = { ...process.env, RUNNER_TEMP: runnerTemp };
 const prepare = resolve('scripts/prepare-security-db.mjs');
 const integration = resolve('scripts/test-security-db.mjs');
 const node = process.execPath;
+
+test('local connections omit empty and inherited libpq services and connection overrides', () => {
+  for (const service of ['', 'hosted-service']) {
+    const childEnv = localPostgresEnv({
+      PATH: '/usr/bin', PGSERVICE: service, PGSERVICEFILE: '/hosted/services',
+      PGHOST: 'remote.invalid', PGHOSTADDR: '192.0.2.1', PGPORT: '5432',
+      PGDATABASE: 'hosted', PGUSER: 'remote-user', PGPASSWORD: 'not-a-real-secret',
+      PGPASSFILE: '/hosted/passwords', PGOPTIONS: '-c search_path=hosted',
+      PGSSLMODE: 'require', PGTARGETSESSIONATTRS: 'read-write',
+    });
+    assert.deepEqual(childEnv, {
+      PATH: '/usr/bin', PGPASSWORD: 'postgres', PGHOSTADDR: '127.0.0.1',
+      PGOPTIONS: '', PGSSLMODE: 'disable',
+    });
+    assert(!Object.hasOwn(childEnv, 'PGSERVICE'));
+  }
+});
 
 test('preparation refuses a path outside RUNNER_TEMP', () => {
   const result = spawnSync(node, [prepare, root], { env, encoding: 'utf8' });

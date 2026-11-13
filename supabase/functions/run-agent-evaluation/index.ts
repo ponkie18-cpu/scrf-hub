@@ -159,6 +159,18 @@ serve(async (req) => {
       return createErrorResponse("Invalid token", 401, "INVALID_TOKEN");
     }
 
+    // Authentication is not authorization. Check the verified user's DB role
+    // before reading evaluation data, creating runs, or spending model credits.
+    const { data: isAdmin, error: roleError } = await supabase.rpc("has_role", {
+      _user_id: user.id, _role: "admin",
+    });
+    if (roleError) {
+      return createErrorResponse("Administrator access could not be verified", 503, "AUTHORIZATION_UNAVAILABLE");
+    }
+    if (isAdmin !== true) {
+      return createErrorResponse("Administrator access required", 403, "ADMIN_REQUIRED");
+    }
+
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
       return createErrorResponse("AI gateway not configured", 500, "CONFIG_ERROR");

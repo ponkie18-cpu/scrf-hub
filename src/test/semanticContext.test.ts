@@ -148,6 +148,7 @@ describe("scope and source-state boundaries", () => {
     const history = db.calls.find((q) => q.table === "agent_conversations")!.predicates;
     expect(history).toContainEqual(["eq", "user_id", "user-a"]);
     expect(history).toContainEqual(["eq", "session_id", "session-a"]);
+    expect(history).toContainEqual(["eq", "server_verified", true]);
     expect(history).toContainEqual(["limit", 12]);
   });
 });

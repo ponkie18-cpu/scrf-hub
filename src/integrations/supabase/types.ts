@@ -154,6 +154,7 @@ export type Database = {
           created_at: string | null
           id: string
           role: string
+          server_verified: boolean
           session_id: string
           structured_data: Json | null
           user_id: string
@@ -163,6 +164,7 @@ export type Database = {
           created_at?: string | null
           id?: string
           role: string
+          server_verified?: boolean
           session_id?: string
           structured_data?: Json | null
           user_id: string
@@ -172,6 +174,7 @@ export type Database = {
           created_at?: string | null
           id?: string
           role?: string
+          server_verified?: boolean
           session_id?: string
           structured_data?: Json | null
           user_id?: string
@@ -1808,6 +1811,11 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      ensure_own_subscription: { Args: Record<PropertyKey, never>; Returns: boolean }
+      reserve_agent_quota: {
+        Args: { _user_id: string }
+        Returns: { allowed: boolean; remaining: number }[]
+      }
       activate_paid_subscription: {
         Args: {
           _current_period_end: string

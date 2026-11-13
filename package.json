@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "smoke": "vitest run src/test/smoke/ --reporter=verbose",
-    "test:semantic": "vitest run src/test/semanticContext.test.ts src/test/semanticMigrations.test.ts src/test/agentProvenance.test.tsx src/test/requireRole.test.tsx"
+    "test:semantic": "vitest run src/test/semanticContext.test.ts src/test/semanticMigrations.test.ts src/test/agentProvenance.test.tsx src/test/requireRole.test.tsx",
+    "test:authorization": "vitest run src/test/authorizationMigrations.test.ts src/test/authorizationEndpoints.test.ts src/test/subscriptionAuthority.test.tsx"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

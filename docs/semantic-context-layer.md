@@ -182,3 +182,11 @@ Rollback the **prompt/retrieval** rollout by setting the flag false. Do not undo
 membership or approval restrictions to restore old behaviour. Keep migrations and
 publication history; reversing them requires a separate reviewed data migration.
 This flag is not a rollback of the scoring refactor or the security fixes.
+
+## Follow-up authorization hardening
+
+See [Agent and subscription authorization hardening](authorization-hardening.md)
+for backend-owned entitlements, restricted billing/trial RPCs, administrator-only
+evaluations, atomic quota reservation, and server-verified history. That follow-up
+adds a required forward migration and coordinated deployment gates; neither this
+document nor the tests establish that a hosted environment has been remediated.

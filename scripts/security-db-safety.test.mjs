@@ -43,6 +43,8 @@ test('preparation copies every migration unchanged and isolates its CI-only mark
   const config = readFileSync(join(target, 'supabase/config.toml'), 'utf8');
   assert.match(config, /project_id = "scrf-security-ci"/);
   assert.match(config, /port = 55432/);
+  assert.match(config, /\[local_smtp\]\nenabled = false/);
+  assert.doesNotMatch(config, /\[inbucket\]/);
   assert.doesNotMatch(config, /woiezcydmmngzlbxraxl|supabase\.co/);
 });
 test('integration refuses an outside directory before attempting a database connection', () => {

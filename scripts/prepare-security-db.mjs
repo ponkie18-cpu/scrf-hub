@@ -28,9 +28,11 @@ port = 55431
 port = 55432
 shadow_port = 55430
 major_version = 15
+[db.seed]
+enabled = false
 [studio]
 enabled = false
-[inbucket]
+[local_smtp]
 enabled = false
 [storage]
 enabled = false

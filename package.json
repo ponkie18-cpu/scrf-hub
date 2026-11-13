@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "smoke": "vitest run src/test/smoke/ --reporter=verbose",
     "test:semantic": "vitest run src/test/semanticContext.test.ts src/test/semanticMigrations.test.ts src/test/agentProvenance.test.tsx src/test/requireRole.test.tsx",
-    "test:authorization": "vitest run src/test/authorizationMigrations.test.ts src/test/authorizationEndpoints.test.ts src/test/subscriptionAuthority.test.tsx"
+    "test:authorization": "vitest run src/test/authorizationMigrations.test.ts src/test/authorizationEndpoints.test.ts src/test/subscriptionAuthority.test.tsx",
+    "test:security-ci": "node --test scripts/security-db-safety.test.mjs",
+    "test:security-db": "node scripts/test-security-db.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

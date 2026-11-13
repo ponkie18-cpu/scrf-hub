@@ -45,8 +45,6 @@ jobs:
     name: Full migration replay and independent-connection quotas
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    env:
-      CI_DB_WORKDIR: ${{ runner.temp }}/scrf-security-db
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -60,17 +58,17 @@ jobs:
       - name: Install PostgreSQL client only
         run: sudo apt-get update -qq && sudo apt-get install -y postgresql-client
       - name: Prepare isolated local project and byte-for-byte migrations
-        run: node scripts/prepare-security-db.mjs "$CI_DB_WORKDIR"
+        run: node scripts/prepare-security-db.mjs "$RUNNER_TEMP/scrf-security-db"
       - name: Start fresh local Supabase and replay ALL migrations
         shell: bash
         run: |
           set -euo pipefail
-          supabase start --workdir "$CI_DB_WORKDIR" 2>&1 | tee "$RUNNER_TEMP/migration-replay.log"
+          supabase start --workdir "$RUNNER_TEMP/scrf-security-db" 2>&1 | tee "$RUNNER_TEMP/migration-replay.log"
       - name: Database authorization and real concurrent quota tests
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/test-security-db.mjs "$CI_DB_WORKDIR" 2>&1 | tee "$RUNNER_TEMP/database-security.log"
+          node scripts/test-security-db.mjs "$RUNNER_TEMP/scrf-security-db" 2>&1 | tee "$RUNNER_TEMP/database-security.log"
       - name: Preserve replay evidence (also on failure)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

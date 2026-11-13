@@ -20,7 +20,7 @@ export async function buildContext(
       typeof row.title === "string" && typeof row.created_at === "string" &&
       (row.company_id === null || (scope.companyId !== null && row.company_id === scope.companyId))),
     sessionId ? readRows(db.from("agent_conversations").select("role,content,created_at")
-      .eq("user_id", scope.userId).eq("session_id", sessionId)
+      .eq("user_id", scope.userId).eq("session_id", sessionId).eq("server_verified", true)
       .order("created_at", { ascending: false }).order("id", { ascending: false }).limit(12),
     (row): row is { role: "user" | "assistant"; content: string; created_at: string } =>
       isRecord(row) && ["user", "assistant"].includes(String(row.role)) &&

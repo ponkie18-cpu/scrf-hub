@@ -188,8 +188,7 @@ export function useTierAccess(): TierAccessState {
         });
       } else {
         const { error: insertError } = await supabase
-          .from('user_subscriptions')
-          .insert({ user_id: user.id, tier: 'free_registered' });
+          .rpc('ensure_own_subscription');
         
         if (!insertError) {
           setSubscriptionData({
@@ -257,7 +256,7 @@ export function useTierAccess(): TierAccessState {
 
     try {
       const { data, error } = await supabase.rpc('increment_saves_used', { _user_id: user.id });
-      if (!error) {
+      if (!error && data === true) {
         await fetchSubscription();
         return true;
       }
@@ -271,8 +270,8 @@ export function useTierAccess(): TierAccessState {
     if (!user) return false;
 
     try {
-      const { error } = await supabase.rpc('start_pro_trial', { _user_id: user.id });
-      if (!error) {
+      const { data, error } = await supabase.rpc('start_pro_trial', { _user_id: user.id });
+      if (!error && data === true) {
         // Reactively update local state immediately — no page reload needed
         const now = new Date();
         const trialEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);

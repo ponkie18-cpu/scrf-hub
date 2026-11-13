@@ -555,35 +555,14 @@ function sanitisePrompt(input: string): string {
 async function checkRateLimit(
   supabase: SupabaseClient,
   userId: string,
-  tier: string,
 ): Promise<{ allowed: boolean; remaining: number }> {
-  const limit = tier === "pro" ? 999999 : 10;
-  const now = new Date();
-  const windowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-
-  const { data: existing } = await supabase
-    .from("ai_rate_limits")
-    .select("call_count, window_start")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (!existing || new Date(existing.window_start).toDateString() !== now.toDateString()) {
-    await supabase
-      .from("ai_rate_limits")
-      .upsert({ user_id: userId, call_count: 1, window_start: windowStart }, { onConflict: "user_id" });
-    return { allowed: true, remaining: limit - 1 };
+  const { data, error } = await supabase.rpc("reserve_agent_quota", { _user_id: userId });
+  const quota = Array.isArray(data) && data.length === 1 ? data[0] : null;
+  if (error || !quota || typeof quota.allowed !== "boolean" ||
+    !Number.isInteger(quota.remaining) || quota.remaining < 0) {
+    throw new Error("QUOTA_UNAVAILABLE");
   }
-
-  if (existing.call_count >= limit) {
-    return { allowed: false, remaining: 0 };
-  }
-
-  await supabase
-    .from("ai_rate_limits")
-    .update({ call_count: existing.call_count + 1 })
-    .eq("user_id", userId);
-
-  return { allowed: true, remaining: limit - existing.call_count - 1 };
+  return { allowed: quota.allowed, remaining: quota.remaining };
 }
 
 // ────────────────────────────────────────────────────────────
@@ -645,7 +624,12 @@ serve(async (req) => {
         ? "pro"
         : "free";
 
-    const body = await req.json();
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return new Response(JSON.stringify({ error: "Expected a JSON object" }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
     const {
       message,
       type,
@@ -657,6 +641,18 @@ serve(async (req) => {
       marketEntryData,
       premortemData,
     } = body;
+
+    // Unknown values must not fall through to standard generation without quota.
+    const supportedTypes = new Set([
+      "standard", "conversation", "briefing", "spof_mitigation", "cashflow_recommendations",
+      "financial_health_analysis", "game_theory_nash", "market_entry", "prisoner_dilemma",
+      "pre_mortem", "resilience_audit",
+    ]);
+    if (type !== undefined && (typeof type !== "string" || !supportedTypes.has(type))) {
+      return new Response(JSON.stringify({ error: "Invalid request type" }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     if (sessionId !== undefined && (typeof sessionId !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId))) {
@@ -683,10 +679,16 @@ serve(async (req) => {
       );
     }
 
-    // Apply rate limiting for conversational/briefing calls AND free-tier tool analysis
-    const rateLimitTypes = [undefined, "conversation", "briefing", "spof_mitigation", "cashflow_recommendations", "financial_health_analysis"];
-    if (!type || rateLimitTypes.includes(type)) {
-      const rateCheck = await checkRateLimit(supabase, user.id, effectiveTier);
+    // Reserve quota for EVERY supported mode, including Pro-only tools. A failed
+    // reservation fails closed before context retrieval or model execution.
+    {
+      let rateCheck: { allowed: boolean; remaining: number };
+      try { rateCheck = await checkRateLimit(supabase, user.id); }
+      catch {
+        return new Response(JSON.stringify({ error: "quota_unavailable", message: "Usage limits could not be verified. Please try again.", retryable: true }), {
+          status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       if (!rateCheck.allowed) {
         return new Response(
           JSON.stringify({
@@ -727,8 +729,8 @@ serve(async (req) => {
       if (sessionId) {
         try {
           await supabase.from("agent_conversations").insert([
-            { user_id: user.id, role: "user", content: message, session_id: sessionId },
-            { user_id: user.id, role: "assistant", content: redirectResponse, session_id: sessionId, structured_data: { insight: redirectResponse, recommendation: "Contact a registered tax practitioner at sait.org.za", urgencyLevel: "amber", relatedTools: ["regulatory-tracker", "compliance-motivation"], nextAction: "Visit sait.org.za to find a registered tax practitioner", _taxIntercepted: true } },
+            { user_id: user.id, role: "user", content: message, session_id: sessionId, server_verified: true },
+            { user_id: user.id, role: "assistant", content: redirectResponse, session_id: sessionId, server_verified: true, structured_data: { insight: redirectResponse, recommendation: "Contact a registered tax practitioner at sait.org.za", urgencyLevel: "amber", relatedTools: ["regulatory-tracker", "compliance-motivation"], nextAction: "Visit sait.org.za to find a registered tax practitioner", _taxIntercepted: true } },
           ]);
         } catch (_) { /* Non-blocking */ }
       }
@@ -1645,9 +1647,10 @@ Use the provide_financial_analysis tool to return structured output.`;
       if (sessionId) {
         try {
           await supabase.from("agent_conversations").insert([
-            { user_id: user.id, role: "user", content: message, session_id: sessionId },
+            { user_id: user.id, role: "user", content: message, session_id: sessionId, server_verified: true },
             {
               user_id: user.id,
+              server_verified: true,
               role: "assistant",
               content: structured.insight,
               structured_data: {

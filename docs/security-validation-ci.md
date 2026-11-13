@@ -1,12 +1,12 @@
 # Reproducible security validation
 
-**Status: tests/scripts prepared; executable workflow publication is blocked by
-GitHub token permissions.** See `security-validation-workflow.md` for the exact
-non-executable proposal and administrator activation instructions. Full local
-Supabase replay/concurrency has not yet run; it requires Docker and `psql`, which
-are unavailable in the ARIA sandbox. Do not treat this PR as a passing CI gate.
+**Status: executable workflow added; inspect the PR's GitHub Actions checks for
+validation results.** Full local Supabase replay/concurrency requires Docker and
+`psql`, which are unavailable in the ARIA sandbox. Workflow publication alone is
+not evidence that these checks passed. The prior permission-blocked proposal is
+preserved in `security-validation-workflow.md` for reference.
 
-Once installed, the proposed `Security validation` GitHub Actions workflow will
+The `Security validation` GitHub Actions workflow will
 run on pull requests, pushes to `main`, and manual dispatch. It requests read-only
 repository permissions, consumes no repository/environment secrets, and contains
 no hosted Supabase link, database push/reset, function deployment, payment request,
@@ -98,4 +98,5 @@ health. See `authorization-hardening.md` for the broader operator checklist.
 Before deployment: inspect the workflow results, replay on isolated hosted staging,
 test real signup and service-role billing flows, and review actual grants/owners.
 Apply the new forward migration through the normal authorized migration process;
-merging this PR does not itself apply SQL, deploy Edge Functions, or install CI.
+merging this PR does not itself apply SQL or deploy Edge Functions. It installs
+the validation workflow on the default branch.

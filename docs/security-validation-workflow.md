@@ -1,11 +1,12 @@
-# Pending workflow — repository administrator action required
+# Workflow reference — initial permission blocker resolved
 
-The connected GitHub token cannot create/update executable workflows: GitHub
+The initial connected token could not create/update executable workflows: GitHub
 requires the classic PAT `workflow` scope (or fine-grained **Workflows: write**).
-This is a non-executable proposal, not installed or validated CI. A repository
-administrator can review this configuration and add it as
-`.github/workflows/security-validation.yml`, or grant the required token permission
-and ask ARIA to publish it. No GitHub permissions or protection rules were changed.
+After the user updated token permissions and requested a retry, the executable
+workflow was added at `.github/workflows/security-validation.yml`. That file is
+the source of truth; the original proposal below is retained for reference.
+Check GitHub Actions for actual validation results. ARIA did not change repository
+permissions or protection rules.
 
 ```yaml
 name: Security validation

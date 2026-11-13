@@ -37,11 +37,15 @@ beforeAll(async () => {
     "20260308070132_5c5ea407-ddb6-44a2-a61e-6cc0670bfdd7.sql",
     "20260308093217_44f10e04-10b4-4da5-bd79-90d6c191edbe.sql",
   ]) await db.exec(await migration(name));
+  // Reproduce the actual newer billing schema too, not only the legacy table.
+  // PGlite has no Supabase publication; full CI replays this file unmodified.
+  await db.exec((await migration("20260308122952_afbf83d0-0b15-4019-9b80-700e8d31ef16.sql")).split("-- 5. Enable realtime")[0]);
   // Model Supabase table grants before the forward migration revokes client writes.
   await db.exec("GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO anon,authenticated,service_role");
   await db.query("INSERT INTO auth.users(id,email) VALUES ($1,'first@example.test'),($2,'second@example.test')", [member, other]);
   await db.query("INSERT INTO agent_conversations(user_id,session_id,role,content) VALUES ($1,$2,'assistant','Untrusted legacy row')", [member, session]);
   await db.exec(await migration("20261113160000_authorization_hardening.sql"));
+  await db.exec(await migration("20261113170000_billing_subscription_authority.sql"));
 }, 30000);
 beforeEach(() => db.exec("BEGIN"));
 afterEach(() => db.exec("ROLLBACK; RESET ROLE"));
@@ -63,6 +67,7 @@ describe("subscription authority", () => {
   it("preserves signup provisioning", async () => {
     await db.exec("INSERT INTO auth.users(id,email) VALUES ('00000000-0000-0000-0000-000000000099','new@example.test')");
     expect((await db.query("SELECT * FROM user_subscriptions")).rows).toHaveLength(3);
+    expect((await db.query("SELECT plan_type FROM subscriptions WHERE user_id='00000000-0000-0000-0000-000000000099'")).rows).toEqual([{ plan_type: "free" }]);
   });
   it("repairs only the caller's missing row with free defaults", async () => {
     await actor(legacyUser);
@@ -126,6 +131,36 @@ describe("subscription authority", () => {
     expect((await db.query("SELECT activate_paid_subscription($1,'x','x','x',now()) AS changed", [other])).rows).toEqual([{ changed: true }]);
     expect((await db.query("SELECT tier FROM user_subscriptions WHERE user_id=$1", [other])).rows).toEqual([{ tier: "pro" }]);
     expect((await db.query("SELECT deactivate_subscription($1) AS changed", [other])).rows).toEqual([{ changed: true }]);
+  });
+});
+
+describe("newer billing subscription authority", () => {
+  it.each(["plan_type='pro'", "trial_end_date=now()+interval '1 year'", "payment_failure_count=0"])("denies client billing change: %s", async (change) => {
+    await actor(member);
+    await expect(db.query(`UPDATE subscriptions SET ${change} WHERE user_id=$1`, [member])).rejects.toThrow("permission denied");
+  });
+  it.each(["anon", "authenticated"])("denies %s insertion and deletion privileges", async (role) => {
+    expect((await db.query("SELECT has_table_privilege($1,'subscriptions','INSERT') AS insert,has_table_privilege($1,'subscriptions','DELETE') AS delete", [role])).rows)
+      .toEqual([{ insert: false, delete: false }]);
+  });
+  it("preserves own billing reads and isolates other accounts", async () => {
+    await actor(member);
+    expect((await db.query("SELECT user_id,plan_type FROM subscriptions")).rows).toEqual([{ user_id: member, plan_type: "free" }]);
+  });
+  it("preserves backend billing writes and actual signup provisioning", async () => {
+    await actor(null, "service_role");
+    await db.query("UPDATE subscriptions SET plan_type='pro',billing_interval='monthly' WHERE user_id=$1", [member]);
+    expect((await db.query("SELECT plan_type FROM subscriptions WHERE user_id=$1", [member])).rows).toEqual([{ plan_type: "pro" }]);
+  });
+  it("retains defense in depth if UPDATE grant and owner policy are restored", async () => {
+    await db.exec("GRANT UPDATE ON subscriptions TO authenticated; CREATE POLICY test_accidental_billing_update ON subscriptions FOR UPDATE TO authenticated USING (auth.uid()=user_id)");
+    await actor(member);
+    await expect(db.query("UPDATE subscriptions SET plan_type='pro' WHERE user_id=$1", [member])).rejects.toThrow("authorized backend operation");
+  });
+  it("blocks client insertion if only the table grant is restored", async () => {
+    await db.exec("GRANT INSERT ON subscriptions TO authenticated");
+    await actor(legacyUser);
+    await expect(db.query("INSERT INTO subscriptions(user_id,plan_type) VALUES ($1,'pro')", [legacyUser])).rejects.toThrow("row-level security");
   });
 });
 
